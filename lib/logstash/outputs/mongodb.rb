@@ -34,22 +34,46 @@ class LogStash::Outputs::Mongodb < LogStash::Outputs::Base
   # "_id" field in the event.
   config :generateId, :validate => :boolean, :default => false
 
-
   # Bulk insert flag, set to true to allow bulk insertion, else it will insert events one by one.
   config :bulk, :validate => :boolean, :default => false
+
   # Bulk interval, Used to insert events periodically if the "bulk" flag is activated.
   config :bulk_interval, :validate => :number, :default => 2
+
   # Bulk events number, if the number of events to insert into a collection raise that limit, it will be bulk inserted
   # whatever the bulk interval value (mongodb hard limit is 1000).
   config :bulk_size, :validate => :number, :default => 900, :maximum => 999, :min => 2
 
-  # The method used to write processed events to MongoDB.
-  # Possible values are `insert`, `update` and `replace`.
-  config :action, :validate => :string, :required => true
-  # The key of the query to find the document to update or replace.
-  config :query_key, :validate => :string, :required => false, :default => "_id"
-  # The value of the query to find the document to update or replace. This can be dynamic using the `%{foo}` syntax.
-  config :query_value, :validate => :string, :required => false
+  # The Mongo DB action to perform. Valid actions are:
+  #
+  # - insert: inserts a document, fails if a document the document already exists.
+  # - update: updates a document given a `filter`. You can also upsert a document, see the `upsert` option.
+  # - delete: *Not Supported* at the moment
+  #
+  # A sprintf style string is allowed to change the action based on the content
+  # of the event. The value `%{[foo]}` would use the foo field for the action.
+  #
+  # For more details on actions, check out the https://docs.mongodb.com/ruby-driver/v2.6/tutorials/ruby-driver-bulk-operations[Mongo Ruby Driver documentation]
+  config :action, :validate => :string, :default => "insert"
+
+  # The value of the :filter clause for update or replace. A sprintf style
+  # string is allowed for either keys or values. The value `%{[foo]}` would use
+  # the foo field instead.
+  config :filter, :validate => :hash, :required => false, :default => {}
+
+  # The _first_ key/value in :update_expressions will be used *instead* of the
+  # default '$set' update operator. This option is useful for using alternative
+  # operators like '$inc'.
+  #
+  # A sprintf style string is allowed for values. The value `%{[foo]}` would use
+  # the foo field instead.
+  #
+  # Keys must start with `$`, see the https://docs.mongodb.com/manual/reference/operator/update/#id1[Mongo DB Update Operators] for reference.
+  #
+  # Note that while the name of the option is plural, passing a pipeline is not
+  # yet supported (Mongo >= 4.2). Only *the first* key/value will be used.
+  config :update_expressions, :validate => :hash, :required => false, :default => nil
+
   # If true, a new document is created if no document exists in DB with given `document_id`.
   # Only applies if action is `update` or `replace`.
   config :upsert, :validate => :boolean, :required => false, :default => false
@@ -88,20 +112,37 @@ class LogStash::Outputs::Mongodb < LogStash::Outputs::Base
     if @bulk_size > 1000
       raise LogStash::ConfigurationError, "Bulk size must be lower than '1000', currently '#{@bulk_size}'"
     end
-    if @action != "insert" && @action != "update" && @action != "replace"
-      raise LogStash::ConfigurationError, "Only insert, update and replace are valid for 'action' setting."
+    if !@update_expressions.nil?
+      @update_expressions.keys.each { |k|
+        if !is_update_operator(k)
+          raise LogStash::ConfigurationError, "The :update_expressions option contains '#{k}', which is not an Update expression."
+          break
+        end
+      }
     end
-    if (@action == "update" || @action == "replace") && (@query_value.nil? || @query_value.empty?)
-      raise LogStash::ConfigurationError, "If action is update or replace, query_value must be set."
+  end
+
+  def validate_action(action, filter, update_expressions)
+    if action != "insert" && action != "update" && action != "replace"
+      raise LogStash::ConfigurationError, "Only insert, update and replace are supported Mongo actions, got '#{action}'."
+    end
+    if (action == "update" || action == "replace") && (filter.nil? || filter.empty?)
+      raise LogStash::ConfigurationError, "If action is update or replace, filter must be set."
+    end
+    if action != "update" && !(update_expressions.nil? || update_expressions.empty?)
+      raise LogStash::ConfigurationError, "The :update_expressions only makes sense if the action is an update."
     end
   end
 
   def receive(event)
+    action = event.sprintf(@action)
+
+    validate_action(action, @filter, @update_expressions)
+
     begin
       # Our timestamp object now has a to_bson method, using it here
       # {}.merge(other) so we don't taint the event hash innards
       document = {}.merge(event.to_hash)
-
       if !@isodate
         timestamp = event.timestamp
         if timestamp
@@ -117,9 +158,19 @@ class LogStash::Outputs::Mongodb < LogStash::Outputs::Base
       end
 
       collection = event.sprintf(@collection)
-      if @action == "update" or @action == "replace"
-        document["metadata_mongodb_output_query_value"] = event.sprintf(@query_value)
+      if action == "update" or action == "replace"
+        document["metadata_mongodb_output_filter"] = apply_event_to_hash(event, @filter)
       end
+
+      if action == "update" and !(@update_expressions.nil? || @update_expressions.empty?)
+        # we only expand the values cause keys are update expressions
+        expressions_hash = {}
+        @update_expressions.each do |k, v|
+          expressions_hash[k] = apply_event_to_hash(event, v)
+        end
+        document["metadata_mongodb_output_update_expressions"] = expressions_hash
+      end
+
       if @bulk
         @@mutex.synchronize do
           if(!@documents[collection])
@@ -144,32 +195,56 @@ class LogStash::Outputs::Mongodb < LogStash::Outputs::Base
         # to fix the issue.
         @logger.warn("Skipping insert because of a duplicate key error", :event => event, :exception => e)
       else
-        @logger.warn("Failed to send event to MongoDB, retrying in #{@retry_delay.to_s} seconds", :event => event, :exception => e)
+        @logger.warn("Failed to send event to MongoDB retrying in #{@retry_delay.to_s} seconds", :event => event, :exception => e)
         sleep(@retry_delay)
-        retry
+        # retry
       end
     end
   end
 
   def write_to_mongodb(collection, documents)
     ops = get_write_ops(documents)
+    @logger.debug("Sending", :ops => ops)
     @db[collection].bulk_write(ops)
   end
 
   def get_write_ops(documents)
     ops = []
     documents.each do |doc|
-      replaced_query_value = doc["metadata_mongodb_output_query_value"]
-      doc.delete("metadata_mongodb_output_query_value")
-      if @action == "insert"
+      filter = doc["metadata_mongodb_output_filter"]
+      doc.delete("metadata_mongodb_output_filter")
+
+      update_expressions = doc["metadata_mongodb_output_update_expressions"]
+      doc.delete("metadata_mongodb_output_update_expressions")
+
+      # TODO: support multiple expressions as pipeline for Mongo >= 4.2
+      update = if !update_expressions.nil?
+                 [update_expressions.first].to_h
+               else
+                 {'$set' => to_dotted_hash(doc)}
+               end
+
+      if action == "insert"
         ops << {:insert_one => doc}
-      elsif @action == "update"
-        ops << {:update_one => {:filter => {@query_key => replaced_query_value}, :update => {'$set' => to_dotted_hash(doc)}, :upsert => @upsert}}
-      elsif @action == "replace"
-        ops << {:replace_one => {:filter => {@query_key => replaced_query_value}, :replacement => doc, :upsert => @upsert}}
+      elsif action == "update"
+        ops << {:update_one => {:filter => filter, :update => update, :upsert => @upsert}}
+      elsif action == "replace"
+        ops << {:replace_one => {:filter => filter, :replacement => doc, :upsert => @upsert}}
       end
     end
     ops
+  end
+
+  def is_update_operator(string)
+    string.start_with?("$")
+  end
+
+  # Apply the event to the input hash keys and values.
+  # This function is not recursive (update operators don't accept nested hashes).
+  def apply_event_to_hash(event, hash)
+    hash.clone.each_with_object({}) do |(k, v), ret|
+      ret[event.sprintf(k)] = event.sprintf(v)
+    end
   end
 
   def to_dotted_hash(hash, recursive_key = "")
