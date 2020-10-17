@@ -1,0 +1,32 @@
+# Thank you Cameron Kerr for https://github.com/cameronkerrnz/logstash-plugin-dev
+version: 2.1
+
+jobs:
+  build_v7:
+    docker:
+      - image: cameronkerrnz/logstash-plugin-dev:7.9
+    steps:
+      - checkout
+      - run:
+          name: Ruby Bundle Install
+          command: bundle install
+      - run:
+          name: Ruby Build Gem
+          command: gem build logstash-output-mongodb.gemspec
+
+  test_v7:
+    docker:
+      - image: cameronkerrnz/logstash-plugin-dev:7.9
+
+    steps:
+      - checkout
+      - run: bundle install
+      - run: bundle exec rspec
+
+
+workflows:
+  version: 2.1
+  test_logstash:
+    jobs:
+      - build_v7
+      - test_v7
