@@ -1,117 +1,79 @@
-# Configuration taken from https://github.com/DataDog/logstash-output-datadog_logs
-# Thank you very much DataDog folks for sharing your work.
+###################################################################################
+# Thank you Cameron Kerr for https://github.com/cameronkerrnz/logstash-plugin-dev #
+###################################################################################
 version: 2.1
-orbs:
-  ruby: circleci/ruby@1.0
 
 jobs:
-  logstash_v5:
-    machine: true
-    steps:
-      - checkout
-      - run:
-          name: Install Ruby
-          command: sudo apt-get update && sudo apt-get install ruby-full
-      - run:
-          name: Build Gem
-          command: gem build logstash-output-mongodb.gemspec
-      - run:
-          name: Install Java
-          command: sudo apt-get update && sudo apt-get install openjdk-8-jre
-      - run:
-          name: Install Logstash
-          command: |
-            wget -qO - https://artifacts.elastic.co/GPG-KEY-elasticsearch | sudo apt-key add -
-            sudo apt-get install apt-transport-https
-            echo "deb https://artifacts.elastic.co/packages/5.x/apt stable main" | sudo tee -a /etc/apt/sources.list.d/elastic-5.x.list
-            sudo apt-get update && sudo apt-get install logstash
-      - run:
-          name: Install Plugin
-          command: sudo /usr/share/logstash/bin/logstash-plugin install logstash-output-mongodb-${VERSION}.gem
-      - run:
-          name: Run Logstash
-          shell: /bin/sh
-          command: |
-            sudo timeout 30s /usr/share/logstash/bin/logstash -r -f "test/test.conf"
-            test "$?" -eq 124
-
-  logstash_v6:
-    machine: true
-    steps:
-      - checkout
-      - run:
-          name: Install Ruby
-          command: sudo apt-get update && sudo apt-get install ruby-full
-      - run:
-          name: Build Gem
-          command: gem build logstash-output-mongodb.gemspec
-      - run:
-          name: Install Java
-          command: sudo apt-get update && sudo apt-get install openjdk-8-jre
-      - run:
-          name: Install Logstash
-          command: |
-            wget -qO - https://artifacts.elastic.co/GPG-KEY-elasticsearch | sudo apt-key add -
-            sudo apt-get install apt-transport-https
-            echo "deb https://artifacts.elastic.co/packages/6.x/apt stable main" | sudo tee -a /etc/apt/sources.list.d/elastic-6.x.list
-            sudo apt-get update && sudo apt-get install logstash
-      - run:
-          name: Install Plugin
-          command: sudo /usr/share/logstash/bin/logstash-plugin install logstash-output-mongodb-${VERSION}.gem
-      - run:
-          name: Run Logstash
-          shell: /bin/sh
-          command: |
-            sudo timeout 30s /usr/share/logstash/bin/logstash -r -f "test/test.conf"
-            test "$?" -eq 124
-
-  logstash_v7:
-    machine: true
-    steps:
-      - checkout
-      - run:
-          name: Install Ruby
-          command: sudo apt-get update && sudo apt-get install ruby-full
-      - run:
-          name: Build Gem
-          command: gem build logstash-output-mongodb.gemspec
-      - run:
-          name: Install Java
-          command: sudo apt-get update && sudo apt-get install openjdk-8-jre
-      - run:
-          name: Install Logstash
-          command: |
-            wget -qO - https://artifacts.elastic.co/GPG-KEY-elasticsearch | sudo apt-key add -
-            sudo apt-get install apt-transport-https
-            echo "deb https://artifacts.elastic.co/packages/7.x/apt stable main" | sudo tee -a /etc/apt/sources.list.d/elastic-7.x.list
-            sudo apt-get update && sudo apt-get install logstash
-      - run:
-          name: Install Plugin
-          command: sudo /usr/share/logstash/bin/logstash-plugin install logstash-output-mongodb-${VERSION}.gem
-      - run:
-          name: Run Logstash
-          shell: /bin/sh
-          command: |
-            sudo timeout 30s /usr/share/logstash/bin/logstash -r -f "test/test.conf"
-            test "$?" -eq 124
-
-  test:
+  build:
+    parameters:
+      logstash-version:
+        type: string
     docker:
-      - image: circleci/jruby:latest
-
+      - image: cameronkerrnz/logstash-plugin-dev:<< parameters.logstash-version >>
     steps:
       - checkout
-      - run: gem update --system
-      - run: gem install bundler
-      - run: bundle install --path vendor/bundle
-      - run: bundle exec rspec
+      - restore_cache:
+          keys:
+            # https://discuss.circleci.com/t/checksum-different-before-and-after-bundle-install/17334/14
+            - gem-cache-v1-{{ arch }}-{{ .Branch }}-{{ checksum "Gemfile.lock" }}
+            - gem-cache-v1-{{ arch }}-{{ .Branch }}
+            - gem-cache-v1
+      - run:
+          name: Ruby Bundle Install
+          command: bundle install
+      - save_cache:
+          key: gem-cache-v1-{{ arch }}-{{ .Branch }}-{{ checksum "Gemfile.lock" }}
+          paths:
+            - vendor/bundle
+      - run:
+          name: Ruby Build Gem
+          command: gem build logstash-output-mongodb.gemspec
+      - run:
+          name: Ruby Test with Rspec
+          command: bundle exec rspec
+      - persist_to_workspace:
+          root: ./
+          paths:
+            - logstash-output-mongodb-*.gem
+            - VERSION
 
+  publish-github-release:
+    docker:
+      - image: circleci/golang:1.15.3
+    steps:
+      - attach_workspace:
+          at: ./artifacts
+      - run:
+          name: "Publish Release on GitHub"
+          command: |
+            go get -u github.com/tcnksm/ghr
+            ls --format=single-column ./artifacts
+            repo_version=$(cat ./artifacts/VERSION)
+            ghr -t ${GITHUB_TOKEN} -u ${CIRCLE_PROJECT_USERNAME} \
+                -r ${CIRCLE_PROJECT_REPONAME} \
+                -c ${CIRCLE_SHA1} \
+                -delete \
+                v${repo_version} ./artifacts/logstash-output-mongodb-${repo_version}.gem
 
 workflows:
-  version: 2.1
-  test_logstash:
+  version: 2
+  build-test-publish-on-tag:
     jobs:
-#     - logstash_v5 # Deprecated?
-      - logstash_v6
-      - logstash_v7
-      - test
+      - build:
+          name: build-v<< matrix.logstash-version >>
+          matrix:
+            parameters:
+              logstash-version: ["7.9"]
+          filters:
+            tags:
+              only: /^v.*/
+      - publish-github-release:
+          requires:
+            - build
+          filters:
+            # only act on version tags
+            tags:
+              only: /^v.*/
+            # ignore any commit on any branch by default
+            branches:
+              ignore: /.*/
