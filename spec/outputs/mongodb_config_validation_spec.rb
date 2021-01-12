@@ -13,21 +13,22 @@ describe LogStash::Outputs::Mongodb do
     subject! { LogStash::Outputs::Mongodb.new(config) }
 
     [
-        {:update_expressions => {"invalid-expression" => "foo"},
-         :expected_reason => "The :update_expressions option contains 'invalid-expression', which is not an Update expression."},
-        {:action => "insert", :bulk_size => 1001,
-         :expected_reason => "Bulk size must be lower than '1000', currently '1001'"},
+      { :update_expressions => { "invalid-expression" => "foo" },
+        :expected_reason => "The :update_expressions option contains 'invalid-expression', which is not an Update expression." },
+      { :action => "insert", :bulk_size => 1001,
+        :expected_reason => "Bulk size must be lower than '1000', currently '1001'" },
     ].each do |test|
 
       describe "with :bulk_size => '#{test[:bulk_size]}', :upsert => '#{test[:upsert]}' and :update_expressions => '#{test[:update_expressions]}'" do
 
         let(:config) do
           configuration = {
-              "uri" => uri,
-              "database" => database,
-              "collection" => collection,
-              "filter" => {"_id" => "123"},
-              "action" => "update"
+            "uri" => uri,
+            "database" => database,
+            "collection" => collection,
+            "filter" => { "_id" => "123" },
+            "action" => "update",
+            "max_retries" => 0,
           }
           unless test[:bulk_size].nil?
             configuration["bulk_size"] = test[:bulk_size]
@@ -50,33 +51,34 @@ describe LogStash::Outputs::Mongodb do
     subject! { LogStash::Outputs::Mongodb.new(config) }
 
     [
-        {:action => "unsupported", :filter => {"_id" => "123"}, :upsert => false,
-         :expected_reason => "Only insert, update and replace are supported Mongo actions, got 'unsupported'."},
-        {:action => "delete", :filter => {"_id" => "123"}, :upsert => false,
-         :expected_reason => "Only insert, update and replace are supported Mongo actions, got 'delete'."},
-        {:action => "update", :filter => {}, :upsert => false,
-         :expected_reason => "If action is update or replace, filter must be set."},
-        {:action => "%{myaction}", :filter => {}, :upsert => false,
-         :expected_reason => "If action is update or replace, filter must be set."},
-        {:action => "%{[myactionnested][foo]}", :filter => {}, :upsert => false,
-         :expected_reason => "If action is update or replace, filter must be set."},
-        {:action => "update", :filter => nil, :upsert => false,
-         :expected_reason => "If action is update or replace, filter must be set."},
-        {:action => "insert", :update_expressions => {"$inc" => {"quantity" => 1}},
-         :expected_reason => "The :update_expressions only makes sense if the action is an update."},
-        {:action => "replace",  :filter => {"_id" => "123"}, :update_expressions => {"$inc" => {"quantity" => 1}},
-         :expected_reason => "The :update_expressions only makes sense if the action is an update."},
+      { :action => "unsupported", :filter => { "_id" => "123" }, :upsert => false,
+        :expected_reason => "Only insert, update and replace are supported Mongo actions, got 'unsupported'." },
+      { :action => "delete", :filter => { "_id" => "123" }, :upsert => false,
+        :expected_reason => "Only insert, update and replace are supported Mongo actions, got 'delete'." },
+      { :action => "update", :filter => {}, :upsert => false,
+        :expected_reason => "If action is update or replace, filter must be set." },
+      { :action => "%{myaction}", :filter => {}, :upsert => false,
+        :expected_reason => "If action is update or replace, filter must be set." },
+      { :action => "%{[myactionnested][foo]}", :filter => {}, :upsert => false,
+        :expected_reason => "If action is update or replace, filter must be set." },
+      { :action => "update", :filter => nil, :upsert => false,
+        :expected_reason => "If action is update or replace, filter must be set." },
+      { :action => "insert", :update_expressions => { "$inc" => { "quantity" => 1 } },
+        :expected_reason => "The :update_expressions only makes sense if the action is an update." },
+      { :action => "replace", :filter => { "_id" => "123" }, :update_expressions => { "$inc" => { "quantity" => 1 } },
+        :expected_reason => "The :update_expressions only makes sense if the action is an update." },
     ].each do |test|
 
       describe "with :action => '#{test[:action]}', :filter => '#{test[:filter]}', :upsert => '#{test[:upsert]}' and :update_expressions => '#{test[:update_expressions]}'" do
 
-        let(:event) { LogStash::Event.new("myaction" => "update", "myactionnested" => {"foo" => "replace"})}
+        let(:event) { LogStash::Event.new("myaction" => "update", "myactionnested" => { "foo" => "replace" }) }
 
         let(:config) do
           configuration = {
-              "uri" => uri,
-              "database" => database,
-              "collection" => collection
+            "uri" => uri,
+            "database" => database,
+            "collection" => collection,
+            "max_retries" => 0,
           }
           unless test[:action].nil?
             configuration["action"] = test[:action]

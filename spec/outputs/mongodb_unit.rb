@@ -12,7 +12,8 @@ describe "mongodb unit tests" do
     "uri" => uri,
     "database" => database,
     "collection" => collection,
-    "action" => action
+    "action" => action,
+    "max_retries" => 0,
   }}
 
   subject! { LogStash::Outputs::Mongodb.new(config) }

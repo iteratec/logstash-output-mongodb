@@ -13,7 +13,8 @@ describe LogStash::Outputs::Mongodb do
     "uri" => uri,
     "database" => database,
     "collection" => collection,
-    "action" => action
+    "action" => action,
+    "max_retries" => 0,
   }}
 
   it "should register and close" do
@@ -76,7 +77,8 @@ describe LogStash::Outputs::Mongodb do
           "database" => database,
           "collection" => collection,
           "generateId" => true,
-          "action" => "insert"
+          "action" => "insert",
+          "max_retries" => 0,
       }}
 
       it "should send a document containing a BSON::ObjectId as _id to mongodb" do

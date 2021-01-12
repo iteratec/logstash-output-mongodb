@@ -3,14 +3,20 @@ require_relative "../spec_helper"
 
 describe LogStash::Outputs::Mongodb, :integration => true do
 
-  let(:uri)        { 'mongodb://localhost:27017' }
-  let(:database)   { 'logstash' }
+  let(:uri) { 'mongodb://localhost:27017' }
+  let(:database) { 'logstash' }
   let(:collection) { 'logs' }
-  let(:action)     { 'insert' }
+  let(:action) { 'insert' }
 
   let(:config) do
-    { "uri" => uri, "database" => database,
-      "collection" => collection, "isodate" => true, "action" => action }
+    {
+      "uri" => uri,
+      "database" => database,
+      "collection" => collection,
+      "isodate" => true,
+      "action" => action,
+      "max_retries" => 0,
+    }
   end
 
   describe "#send" do
@@ -22,8 +28,8 @@ describe LogStash::Outputs::Mongodb, :integration => true do
                          "number" => BigDecimal.new("4321.1234"),
                          "utf8" => "żółć",
                          "int" => 42,
-                         "arry" => [42, "string", 4321.1234]} }
-    let(:event)      { LogStash::Event.new(properties) }
+                         "arry" => [42, "string", 4321.1234] } }
+    let(:event) { LogStash::Event.new(properties) }
 
     before(:each) do
       subject.register

@@ -126,9 +126,9 @@ class LogStash::Outputs::Mongodb < LogStash::Outputs::Base
     if @bulk_size > 1000
       raise LogStash::ConfigurationError, "Bulk size must be lower than '1000', currently '#{@bulk_size}'"
     end
-    if !@update_expressions.nil?
+    unless @update_expressions.nil?
       @update_expressions.keys.each { |k|
-        if !is_update_operator(k)
+        unless is_update_operator(k)
           raise LogStash::ConfigurationError, "The :update_expressions option contains '#{k}', which is not an Update expression."
           break
         end
@@ -152,15 +152,18 @@ class LogStash::Outputs::Mongodb < LogStash::Outputs::Base
 
     retry_count = 0
 
+    document = {}
+    collection = event.sprintf(@collection)
     action = event.sprintf(@action)
-
     validate_action(action, @filter, @update_expressions)
+    filter_hash = {}
+    expressions_hash = {}
 
     begin
       # Our timestamp object now has a to_bson method, using it here
       # {}.merge(other) so we don't taint the event hash innards
       document = {}.merge(event.to_hash)
-      if !@isodate
+      unless @isodate
         timestamp = event.timestamp
         if timestamp
           # not using timestamp.to_bson
@@ -174,61 +177,70 @@ class LogStash::Outputs::Mongodb < LogStash::Outputs::Base
         document["_id"] = BSON::ObjectId.new
       end
 
-      collection = event.sprintf(@collection)
       if action == "update" or action == "replace"
-        document["metadata_mongodb_output_filter"] = apply_event_to_hash(event, @filter)
+        filter_hash = apply_event_to_hash(event, @filter)
+        document["metadata_mongodb_output_filter"] = filter_hash
       end
 
-      if action == "update" and !(@update_expressions.nil? || @update_expressions.empty?)
-        # we only expand the values cause keys are update expressions
-        expressions_hash = {}
-        @update_expressions.each do |k, v|
-          expressions_hash[k] = apply_event_to_hash(event, v)
+      if action == "update"
+        unless @update_expressions.nil? || @update_expressions.empty?
+          # we only expand the values cause keys are update expressions
+          @update_expressions.each do |k, v|
+            expressions_hash[k] = apply_event_to_hash(event, v)
+          end
+          document["metadata_mongodb_output_update_expressions"] = expressions_hash
         end
-        document["metadata_mongodb_output_update_expressions"] = expressions_hash
       end
 
       if @bulk
         @@mutex.synchronize do
-          if(!@documents[collection])
+          unless @documents[collection]
             @documents[collection] = []
           end
           @documents[collection].push(document)
 
-          if(@documents[collection].length >= @bulk_size)
+          if @documents[collection].length >= @bulk_size
             write_to_mongodb(collection, @documents[collection])
             @documents.delete(collection)
           end
         end
       else
         result = write_to_mongodb(collection, [document])
-        @logger.debug("Bulk write result", :result => result)
+        @logger.debug("Bulk write result", :result => to_dotted_hash(result))
       end
 
     rescue => e
       logger_data = {:collection => collection,
                      :document => document,
                      :action => action,
-                     :filter => document["metadata_mongodb_output_filter"],
-                     :update_expressions => document["metadata_mongodb_output_update_expressions"]}
+                     :filter => filter_hash,
+                     :update_expressions => expressions_hash}
 
-      if (e.is_a? Mongo::Error::BulkWriteError)
+      is_duplicate_key_error = false
+      if e.is_a? Mongo::Error::BulkWriteError
         logger_data["result"] = e.result
+        unless e.result.writeErrors.nil?
+          e.result.writeErrors.each do |writeError|
+            is_duplicate_key_error = is_duplicate_key_error | (writeError.code == 11000)
+          end
+        end
+      else
+        is_duplicate_key_error = (e.message =~ /^E11000/)
       end
 
-      @logger.debug("Error: #{e.message}", logger_data)
+      @logger.error("Error: #{e.message}", logger_data)
       @logger.trace("Error backtrace", backtrace: e.backtrace)
 
-      if e.message =~ /^E11000/
+      if is_duplicate_key_error
         # On a duplicate key error, skip the insert.
         # We could check if the duplicate key err is the _id key
         # and generate a new primary key.
         # If the duplicate key error is on another field, we have no way
         # to fix the issue.
-        @logger.warn("Skipping insert because of a duplicate key error", :event => event, :exception => e)
+        @logger.debug("Skipping insert because of a duplicate key error", :event => event, :exception => e)
       else
         # if max_retries is negative we retry forever
-        if (@max_retries < 0 || retry_count < @max_retries)
+        if @max_retries < 0 || retry_count < @max_retries
           retry_count += 1
           @logger.warn("Failed to send event to MongoDB retrying (#{retry_count.to_s}) in #{@retry_delay.to_s} seconds")
           sleep(@retry_delay)

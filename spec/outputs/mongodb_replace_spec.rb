@@ -13,7 +13,8 @@ describe LogStash::Outputs::Mongodb do
       "uri" => uri,
       "database" => database,
       "collection" => collection,
-      "action" => action
+      "action" => action,
+      "max_retries" => 0,
   } }
 
   describe "receive method while action is 'replace'" do
@@ -61,7 +62,8 @@ describe LogStash::Outputs::Mongodb do
               "uri" => uri,
               "database" => database,
               "collection" => collection,
-              "action" => action
+              "action" => action,
+              "max_retries" => 0,
           }
           unless test[:filter].nil?
             configuration["filter"] = test[:filter]

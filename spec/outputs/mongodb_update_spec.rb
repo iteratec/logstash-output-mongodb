@@ -10,21 +10,21 @@ describe LogStash::Outputs::Mongodb do
   let(:action) { 'update' }
 
   let(:config) { {
-      "uri" => uri,
-      "database" => database,
-      "collection" => collection,
-      "action" => action
+    "uri" => uri,
+    "database" => database,
+    "collection" => collection,
+    "action" => action
   } }
 
   describe "receive method while action is 'update'" do
     subject! { LogStash::Outputs::Mongodb.new(config) }
 
     let(:properties) { {
-        "message" => "This is a message!",
-        "uuid" => "00000000-0000-0000-0000-000000000000",
-        "number" => BigDecimal.new("4321.1234"),
-        "integer" => 1,
-        "utf8" => "żółć"
+      "message" => "This is a message!",
+      "uuid" => "00000000-0000-0000-0000-000000000000",
+      "number" => BigDecimal.new("4321.1234"),
+      "integer" => 1,
+      "utf8" => "żółć"
     } }
     let(:event) { LogStash::Event.new(properties) }
     let(:connection) { double("connection") }
@@ -44,44 +44,45 @@ describe LogStash::Outputs::Mongodb do
     end
 
     [
-      {:filter => {"_id" => "[uuid]"}, :upsert => false,
-       :expected => {:filter => {"_id" => "00000000-0000-0000-0000-000000000000"}, :upsert => false}
+      { :filter => { "_id" => "[uuid]" }, :upsert => false,
+        :expected => { :filter => { "_id" => "00000000-0000-0000-0000-000000000000" }, :upsert => false }
       },
-      {:filter => {"%{utf8}" => "[message]"}, :upsert => nil,
-       :expected => {:filter => {"żółć" => "This is a message!"}, :upsert => false}
+      { :filter => { "%{utf8}" => "[message]" }, :upsert => nil,
+        :expected => { :filter => { "żółć" => "This is a message!" }, :upsert => false }
       },
-      {:filter => {"%{utf8}" => "[message]"}, :upsert => true,
-       :expected => {:filter => {"żółć" => "This is a message!"}, :upsert => true}
+      { :filter => { "%{utf8}" => "[message]" }, :upsert => true,
+        :expected => { :filter => { "żółć" => "This is a message!" }, :upsert => true }
       },
       # Nested hash recursion
-      {:filter => {"_id" => "123"},
-       :update_expressions => {"$inc" => {"quantity" => "[integer]"},
-                               "$currentDate" => {"updated_at" => {"$type" => "timestamp"}}},
-       :expected => {:filter => {"_id" => "123"},
-                     :update_expressions => {"$inc" => {"quantity" => 1},
-                                             "$currentDate" => {"updated_at" => {"$type" => "timestamp"}}},
-                     :upsert => false}
+      { :filter => { "_id" => "123" },
+        :update_expressions => { "$inc" => { "quantity" => "[integer]" },
+                                 "$currentDate" => { "updated_at" => { "$type" => "timestamp" } } },
+        :expected => { :filter => { "_id" => "123" },
+                       :update_expressions => { "$inc" => { "quantity" => 1 },
+                                                "$currentDate" => { "updated_at" => { "$type" => "timestamp" } } },
+                       :upsert => false }
       },
       # Nested key-value substitution
-      {:filter => {"_id" => "123"},
-       :update_expressions => {"$inc" => {"quantity" => "[integer]"},
-                               "$rename" => {"foo" => "[utf8]",
-                                             "bar-%{integer}" => "baz"}},
-       :expected => {:filter => {"_id" => "123"},
-                     :update_expressions => {"$inc" => {"quantity" => 1},
-                                             "$rename" => {"foo" => "żółć",
-                                                           "bar-1" => "baz"}},
-                     :upsert => false}
+      { :filter => { "_id" => "123" },
+        :update_expressions => { "$inc" => { "quantity" => "[integer]" },
+                                 "$rename" => { "foo" => "[utf8]",
+                                                "bar-%{integer}" => "baz" } },
+        :expected => { :filter => { "_id" => "123" },
+                       :update_expressions => { "$inc" => { "quantity" => 1 },
+                                                "$rename" => { "foo" => "żółć",
+                                                               "bar-1" => "baz" } },
+                       :upsert => false }
       },
     ].each do |test|
 
       describe "when processing an event with :filter => '#{test[:filter]}', :upsert => '#{test[:upsert]}' and merge :update and :update_expressions}'" do
         let(:config) {
           configuration = {
-              "uri" => uri,
-              "database" => database,
-              "collection" => collection,
-              "action" => action
+            "uri" => uri,
+            "database" => database,
+            "collection" => collection,
+            "action" => action,
+            "max_retries" => 0,
           }
           unless test[:filter].nil?
             configuration["filter"] = test[:filter]
@@ -101,16 +102,16 @@ describe LogStash::Outputs::Mongodb do
           expect(event).to receive(:timestamp).and_return(nil)
           expect(event).to receive(:to_hash).and_return(properties)
 
-          update = if !expected[:update_expressions].nil?
-                     expected[:update_expressions]
+          update = if expected[:update_expressions].nil?
+                     { "$set" => properties }
                    else
-                     {"$set" => properties}
+                     expected[:update_expressions]
                    end
 
           expect(collection).to receive(:bulk_write).with(
-                                  [{:update_one => {:filter => expected[:filter],
-                                                    :update => update,
-                                                    :upsert => expected[:upsert]}}])
+            [{ :update_one => { :filter => expected[:filter],
+                                :update => update,
+                                :upsert => expected[:upsert] } }])
           subject.receive(event)
         end
       end

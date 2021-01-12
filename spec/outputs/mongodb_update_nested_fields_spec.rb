@@ -16,6 +16,7 @@ describe LogStash::Outputs::Mongodb do
       "collection" => collection,
       "action" => action,
       "filter" => filter,
+      "max_retries" => 0,
   } }
 
   describe "receive method while action is 'update'" do
